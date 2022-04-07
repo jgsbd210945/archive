@@ -1,0 +1,36 @@
+5
+
+3
+3
+Bill 46 45000
+Mary 47 45000
+Kris 12 0
+Bark Dog 3
+Meow Cat 6
+Gob Lizard 1
+
+1
+0
+Ronald 31 45000
+
+2
+1
+George 70 9000
+Sarah 12 0
+Woof Dog 3
+
+5
+2
+Phil 67 90000
+Claire 57 8000
+Alex 12 0
+Manny 19 3000
+Willhelm 17 0
+Spot Dog 5
+Maya Cat 16
+
+3
+0
+Bradley 46 45000
+Angie 50 80000
+Dennis 21 0
