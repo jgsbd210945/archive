@@ -1,0 +1,16 @@
+irb(main):001:0> require "./movie_data"
+=> true
+irb(main):002:0> mdata = MovieData.new("v.data")        #Testing w/ a smaller file to make sure that it would work as I've had problems with u.data
+=>
+#<MovieData:0x00007f621deb4e58
+...
+irb(main):003:0> mdata = MovieData.new("u.data")
+=>
+#<MovieData:0x00007f621de5ccd0
+...
+irb(main):004:0> mdata.popularity_list[0...10]
+=> [1189, 1500, 814, 1536, 1293, 1599, 1653, 1467, 1122, 1201]
+irb(main):005:0> mdata.popularity_list[-10..-1]
+=> [1546, 1366, 1564, 1574, 1671, 1325, 1341, 1352, 1626, 1659]
+irb(main):006:0> mdata.most_similar(1)
+=> [916, 864, 92, 457, 301, 823, 435, 268, 339, 738]
