@@ -1,9 +1,8 @@
 # ARCHIVE
 
-This is my current archive of most of the work I have done outside of GitHub. When I have new work requiring uploading I'll upload accordingly.
+This is my current archive of significant projects or works not on other repositories. I have work both from my work in both Computer Science and Political Science; they are divided as seen below.
 
 ## Directory
-
 ### Computer Science
 - COSI 10 - Introduction to Python
 - COSI 12 - Introduction to Java
@@ -12,8 +11,9 @@ This is my current archive of most of the work I have done outside of GitHub. Wh
 - COSI 131 - Operating Systems
 - COSI 166 - Capstone Project For Software Engineering
 
-### Political Science
+### Political Science/History
 - International Relations
 - Comparative Politics
 - American Politics
 - Political Theory
+- History
