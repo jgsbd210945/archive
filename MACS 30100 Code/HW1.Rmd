@@ -1,0 +1,155 @@
+---
+title: "HW1 - Titanic Survival Prediction"
+author: "Jason Gordon"
+date: "2025-01-18"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(tidymodels)
+```
+
+## Titanic Survival Prediction
+
+This is for the first Homework for MACS 30100 - predicting survival on the Titanic.
+
+```{r data prep}
+data("Titanic")
+titanic_df <- as.data.frame(Titanic) |>
+  tidyr::uncount(Freq) |>
+  mutate(Survived = factor(Survived, levels = c("No", "Yes")))
+```
+
+## 2. Splitting Data
+
+While I could have put the dataframes inside of the functions, I figured that pipes would be a bit cleaner.
+
+```{r datasplit}
+set.seed(123)
+
+
+titanic_split <- titanic_df |>
+  initial_split()
+train_data <- titanic_split |>
+  training()
+test_data  <- titanic_split |>
+  testing()
+```
+
+## 3. Data Transformation
+
+This is taken from the scaffolding, but X_ and y_train are specifically selecting the feature matrix and response variable.
+
+```{r datatransform}
+train_data <- train_data |>
+  mutate(Class = as.numeric(Class),
+         Sex   = as.numeric(Sex),
+         Age   = as.numeric(Age),
+         y     = if_else(Survived == "Yes", 1, 0))
+
+test_data <- test_data |>
+  mutate(Class = as.numeric(Class),
+         Sex   = as.numeric(Sex),
+         Age   = as.numeric(Age),
+         y     = if_else(Survived == "Yes", 1, 0))
+
+X_train <- train_data |> select(c(Class, Sex, Age))
+y_train <- train_data |> select(y)
+```
+
+## 4a. Prediction Function
+
+Simply, this is a linear prediction, so it's just a sum of the parameters times the features.
+
+```{r predict}
+predict_class <- function(params, x) {
+  # Theoretically, this is a linear prediction.
+  params[1] + sum(x * params [-1]) # just cleaner this way.
+}
+```
+
+
+## 4b. Objective Function
+
+The objective function takes the parameters, applies X_ and y_train to them, and then predicts the class, computing the total error as was described in class.
+
+```{r objective}
+total_error <- function(params) {
+  discrep <- apply(X_train, MARGIN = 1, function(row) {
+    prediction <- predict_class(params, row)
+  })  
+  error = sum((y_train - discrep) ^ 2)
+}
+```
+
+## 5. Parameter Optimization
+
+`init_params`, the one not in the scaffold, was taken by getting the coefficients of the generalzed linear model for our features.
+
+```{r paramopt}
+init_params <- coef(glm(y ~ Class + Sex + Age,
+                        data = train_data,
+                        family = binomial))
+
+# Optimize parameters using Nelder-Mead to minimize total error.
+opt_result <- optim(par = init_params,
+                    fn = total_error,
+                    method = "BFGS")
+opt_params <- opt_result$par
+```
+
+## 6. Prediction on Test Set and Evaluation
+
+To get the test predictions, we need to apply the test features to the set. However, we still need to check it against y_test, so we make a dataframe with `actual` (y_test), `model` (the prediction), and `correct` (if we're right or not).
+
+It seemed to encoede it as `y`, `model`, and `y.1`, so I'll be using those for the report since they work.
+
+```{r testseteval}
+X_test <- as.matrix(test_data |>
+                      dplyr::select(Class, Sex, Age))
+y_test <- as.matrix(test_data |>
+                      dplyr::select(y))
+
+test_preds <- apply(X_test, 1, function(x) {
+  prediction <- as.numeric(predict_class(opt_params, x) > 0.5)
+})
+
+results <- data.frame(
+  actual = y_test,
+  model = test_preds,
+  correct = test_preds == y_test
+)
+```
+
+## Report
+
+```{r report1}
+### (1) overall accuracy of predictions
+accuracy <- mean(results$y.1)
+cat("Accuracy:", round(accuracy * 100, 2), "%")
+```
+
+```{r report2}
+### (2) accuracy of prediction for the people who, in reality, survived.
+survived <- results |> filter(y == 1)
+survived_accuracy <- mean(survived$y.1)
+cat("Survived Accuracy:", round(survived_accuracy * 100, 2), "%")
+```
+
+Seemingly, the model is a lot better at predicting they died over survival. Here are some counts as well.
+
+```{r counts}
+results |> group_by(y) |>
+  summarize(count = n())
+
+results |> group_by(model) |>
+  summarize(count = n())
+
+results |> group_by(y.1) |>
+  summarize(count = n())
+
+results |> group_by(y, model, y.1) |>
+  summarize(count = n())
+```

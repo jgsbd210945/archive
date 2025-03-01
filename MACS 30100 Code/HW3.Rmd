@@ -1,0 +1,276 @@
+---
+title: "HW3"
+author: "Jason Gordon"
+date: "2025-02-03"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(janitor)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(vip)
+```
+
+## Homework 3 - Random Forest Modeling
+
+This is the documentation for Homework 3, which augments the original `airbnb` dataset through adding a binary variable for amenities (which is given) and predicting prices based on this variable.
+
+The following was given code to us to create a dataset of amenities with which to predict price. I've slightly modified it to get the amenities I'll be using, and then used that to filter the overall binaries of the listings. Then, I used `merge` to add all of the columns to `listings`.
+
+**How I'll be choosing amenities:** Instead of picking the top 10, which would all be available at most properties and thus useless, I'll be choosing those amenities that exist between 40% and 70% of the time, which gives me 21 amenities.
+This allows me to avoid issues of every property having something - which is useless as a result - but also avoids issues of too few properties having them - which is also useless.
+
+```{r amenities}
+listings <- read_csv("listings.csv", show_col_types = FALSE)
+
+listings_long <- listings |>
+  transmute(id,
+            amenities_list = map(amenities, \(x) {
+              clean_x <- gsub('\\[|\\]|"', '', x)
+              out <- str_split(clean_x, ", ", simplify = FALSE)[[1]]
+              out
+              })
+  ) |>
+  unnest(cols = amenities_list) |>
+  filter(!is.na(amenities_list), amenities_list != "") |>
+  mutate(amenities_list = as.character(amenities_list))
+
+top_amenities <- listings_long |> # Changed
+  count(amenities_list, sort = TRUE) |>
+  filter(n > nrow(listings) * 0.4, n < nrow(listings) * 0.7) |>
+  pull(amenities_list)
+
+listings_for_pivot <- listings_long |>
+  filter(amenities_list %in% top_amenities) |>
+  dplyr::select(id, amenities_list) |>
+  mutate(value = 1) |>
+  distinct()
+
+listings_wide <- listings_for_pivot |> # Changed 
+  pivot_wider(
+    id_cols = "id",
+    names_from  = "amenities_list",
+    values_from = "value",
+    values_fill = 0
+  ) |>
+  left_join(listings, by = "id") |>
+  mutate(price = as.numeric(gsub("[\\$,]", "", price))) |>
+  relocate(price, .after = id)
+
+
+corrs <- map_dbl(
+  top_amenities, 
+  ~ cor(listings_wide[[.x]], log(listings_wide$price), use = "complete.obs")
+)
+
+top_predictive_amenities = 
+  tibble(amenity = top_amenities,
+         correlation_with_price = corrs
+  ) |>
+  arrange(desc(abs(correlation_with_price)))
+```
+
+### Cleaning
+
+`randomForests` has a difficult time handling NA values. So, I'll be doing some intensive cleaning to resolve NA values as needed.
+First, I'll take out columns that have more than 1000 NA values - while this is only 1/8th of the amount of rows, I find it to be needed as it removes variables that will not be useful for categorizaiton regardless.
+Then, I'll remove any NA values for price. We're predicting price, so these aren't needed and will only serve to be noise.
+
+```{r nacleaning}
+na_cols <- apply(listings_wide, 2, function(col){sum(is.na(col))})
+na_cols |> sort(decreasing = TRUE) |> head(25)
+missing_cols <- na_cols > 1000 # Harsh, but needed.
+listings_wide0 <- listings_wide
+listings_wide <- listings_wide[!missing_cols]
+
+sum(is.na(listings_wide$price))
+listings_wide <- listings_wide |>
+  filter(!is.na(price)) # We don't need these.
+```
+
+Finally, I'll go through columns again and see how I can deal with them individually.
+
+```{r nacleaning2}
+na_cols <- apply(listings_wide, 2, function(col){sum(is.na(col))})
+na_cols |> sort(decreasing = TRUE) |> head(25) # Only 7 columns, interesting.
+
+# beds and bedrooms seem to be relatively similar. I can just replace the NAs in bedrooms with beds.
+listings_wide |> filter(is.na(bedrooms)) |> select(beds, bedrooms)
+listings_wide$bedrooms <- ifelse(is.na(listings_wide$bedrooms),
+                                 listings_wide$beds,
+                                 listings_wide$bedrooms)
+
+# Host_is_superhost and has_availability are both booleans. NA -> FALSE.
+listings_wide$host_is_superhost <- ifelse(is.na(listings_wide$host_is_superhost),
+                                          FALSE,
+                                          listings_wide$host_is_superhost)
+listings_wide$has_availability <- ifelse(is.na(listings_wide$has_availability),
+                                          FALSE,
+                                          listings_wide$has_availability)
+
+listings_wide$host_neighbourhood <- ifelse(is.na(listings_wide$host_neighbourhood),
+                                         "",
+                                         listings_wide$host_neighbourhood)
+
+# bathrooms_text and description aren't columns I need - I can remove them (and beds)
+na_cols <- apply(listings_wide, 2, function(col){sum(is.na(col))})
+na_cols |> sort(decreasing = TRUE) |> head(10)
+missing_cols <- na_cols > 0
+listings_wide <- listings_wide[!missing_cols]
+
+colnames(listings_wide) <- make.names(colnames(listings_wide))
+# Fixes colnames, makes it easier for randomForest to run
+```
+
+Now, there should be zero NA values, so we can work with this.
+
+## Pre-Analysis Thoughts
+
+I think that using a random tree to predict price based on the these amenities might be *somewhat* useful, although I don't particularly think that it will be a good estimator.
+Simply, amenities can vary based on what is there, and especially as you get a higher price, there is so major difference of amenities.
+Additionally, price can be influenced by location, rooms, and host preference, so there are just too many other conflating factors. Thus, I'll utilize rooms and neighborhood to make trees as well.
+
+Overall, I expect the R^2 to be very low, as I expect quite a lot of variance in the data.
+
+For reference, here are the amenities I've chosen, and how predictive they are:
+
+```{r ref}
+top_amenities
+top_predictive_amenities
+```
+
+I think the five most important variables (in no particular order) will be:
+* `host_neighbourhood`
+* `Dishwasher`
+* `bedrooms`
+* `bathrooms`
+* `Free street parking` (since we're analyzing locations in Chicago)
+
+## Modeling
+
+I'll start by making randomForests with differing numbers of trees to see performance.
+
+```{r ntree}
+rf_ntree <- randomForest(price ~ .,
+                        data = listings_wide,
+                        ntree = 100,
+                        importance = TRUE)
+print(rf_ntree) # R^2 = 0.467.
+
+vip(rf_ntree, num_features = 10) +
+  ggtitle("Variable Importance in price (ntree = 100)") +
+  theme_minimal()
+
+rf_ntree <- randomForest(price ~ .,
+                        data = listings_wide,
+                        ntree = 1000,
+                        importance = TRUE)
+print(rf_ntree) # Only slightly better - 0.477
+
+vip(rf_ntree, num_features = 10) +
+  ggtitle("Variable Importance in price (ntree = 1000)") +
+  theme_minimal()
+```
+
+These trees try 25 variables, which - especially for 1000 trees - makes it take quite some time to run. Let's simplify it a bit by doing 5 and 10 to test, and using 100 trees as a baseline since increasing it by an order of magnitude didn't change all that much..
+
+```{r mtry}
+rf_mtry <- randomForest(price ~ .,
+                        data = listings_wide,
+                        ntree = 100,
+                        mtry = 5,
+                        importance = TRUE)
+print(rf_mtry) # R^2 = .475
+
+vip(rf_mtry, num_features = 5) +
+  ggtitle("Variable Importance in price, using 5 random variables") +
+  theme_minimal()
+
+rf_mtry <- randomForest(price ~ .,
+                        data = listings_wide,
+                        ntree = 100,
+                        mtry = 10,
+                        importance = TRUE)
+print(rf_mtry) # Best so far - .484
+
+vip(rf_mtry, num_features = 10) +
+  ggtitle("Variable Importance in price, using 10 random variables") +
+  theme_minimal()
+```
+
+Finally, I'll play around with max nodes to see if that has any effect. I'll let mtry be blank, and keep ntree at 100.
+
+```{r maxnodes}
+rf_maxnodes <- randomForest(price ~ .,
+                        data = listings_wide,
+                        ntree = 100,
+                        maxnodes = 4, # only 4 splits per tree!
+                        importance = TRUE)
+print(rf_maxnodes) # R^2 = .295
+
+vip(rf_maxnodes, num_features = 10) +
+  ggtitle("Variable Importance in price, varying the max nodes allowed (4)") +
+  theme_minimal()
+
+rf_maxnodes <- randomForest(price ~ .,
+                        data = listings_wide,
+                        ntree = 100,
+                        maxnodes = 16, # let's square that.
+                        importance = TRUE)
+print(rf_maxnodes) # R^2 = .388 - Better...
+
+vip(rf_maxnodes, num_features = 10) +
+  ggtitle("Variable Importance in price, varying the max nodes allowed (16)") +
+  theme_minimal()
+
+rf_maxnodes <- randomForest(price ~ .,
+                        data = listings_wide,
+                        ntree = 100,
+                        maxnodes = 64, # quadruple it one more time?
+                        importance = TRUE)
+print(rf_maxnodes) # R^2 = .458 - best so far.
+
+
+vip(rf_maxnodes, num_features = 10) +
+  ggtitle("Variable Importance in price, varying the max nodes allowed (64)") +
+  theme_minimal()
+```
+
+What's interesting here is that there isn't one single predictor that is the best every time. Quite a few are equally bad - or rather, equally mediocre.
+
+## Predicting Prices from Original Data
+
+Most of these predictions had quite a lot of variance. So, I'll go with the method that seemed to have the highest amount of variables explained without going overboard - 10 variables tried at each split and 100 trees in total.
+
+I'll also plot these predictions alongside the actual prices. Since some can be pretty out of bounds, I'll make one plot with all data in it and then limit the frame to only be up to ~$2,500, where the outliers begin to get really spaced out.
+I'm also adding a y = x line (in blue) to denote where it woudl get the data correct.
+
+```{r predict}
+rf_topredict <- randomForest(price ~ .,
+                        data = listings_wide,
+                        ntree = 100,
+                        mtry = 10,
+                        importance = TRUE)
+print(rf_topredict)
+
+listings_wide$price.hat = predict(rf_topredict, listings_wide)
+
+ggplot(listings_wide, aes(x = price, y = price.hat)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = "blue") # Checking for prediction
+
+# With bounds
+ggplot(listings_wide, aes(x = price, y = price.hat)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = "blue") +
+  xlim(0, 2500) +
+  ylim(0, 2500)
+```
+
+### Takeaways
+Seemingly, this model does relatively well to predict prices at lower values, but begins to under-predict prices as the actual price gets higher. At the highest price in the dataset - $10,000 - it thinks that the price would be closer to $6,000.
+However, I'm somewhat impressed that it stayed close to the y = x line for most of the dataset. I figured it would be much more off than it is.

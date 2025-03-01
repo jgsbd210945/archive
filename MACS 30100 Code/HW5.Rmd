@@ -1,0 +1,148 @@
+---
+title: "HW5"
+author: "Jason Gordon"
+date: "2025-02-18"
+output: pdf_document
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(countrycode)
+library(glmnet)
+library(corrplot) # Correlated w/each other
+library(MASS)
+library(tidymodels)
+load('WVS_Cross-National_Wave_7_rData_v5_0.rdata')
+wvs <- `WVS_Cross-National_Wave_7_v5_0` |> as.tibble()
+```
+
+## Homework 5 Documentation
+
+In Homework 5, we looked to make a Lasso model to understand the most important features for well-being. To do that, we first created a linear idea of well-being based on adding three predictors together: Q46, Q48, and Q49 (Respectively: Feeling of happiness, feeling of self-control, and feeling of satisfaction in life).
+
+Then, we remove variables relating to well-being and happiness, selecting just the questions and finding the names to verify.
+
+```{r chunk1}
+wvs <- wvs |> mutate(well_being = Q46 + Q48 + Q49)
+wvs0 <- wvs
+
+# Directly calling dplyr::select since MASS masks it.
+wvs <- dplyr::select(wvs, matches("^Q([0-9]+)"))
+# Remove 46-56 inclusive
+wvs <- dplyr::select(wvs, !matches("^Q(4[6-9]|5[0-6])$"))
+colnames(wvs)
+```
+
+Then, we'll take all columns and, if they are negative, replace them with NA. For numeric variables with low percentages of NA, we will remove those columns. Otherwise, we'll take out any rows with NAs.
+
+Here, we also add `country`, `age`, and `gender` to determine if they play a factor. I'm also adding `well_being` here so rows match up, but I'll remove it later.
+
+```{r chunk2}
+isnum <- sapply(wvs, is.numeric)
+# Cols where we're working with #'s (Should be all of them, but just in case)
+# For those cols, remove all vals less than 0.
+wvs[isnum] <- lapply(wvs[isnum], \(x) ifelse(x < 0, NA, x))
+
+# Select all numeric vars with <2% missing
+isnum_lowna <- apply(wvs, 2, function(col){
+  (sum(is.na(col)) / nrow(wvs)) < 0.02
+  })
+
+wvs1 <- wvs
+wvs <- wvs[isnum_lowna]
+# Number of Observations thrown out
+ncol_thrown <- ncol(wvs1) - ncol(wvs)
+ncol_thrown
+
+# Add Country/Age/Gender to list of vars. Remove all missing rows!!
+wvs$country <- countrycode(sourcevar = wvs0$B_COUNTRY_ALPHA, 
+                           origin = "iso3c", 
+                           destination = "country.name")
+wvs$age = ifelse(wvs$Q262>15, wvs$Q262, NA)
+wvs$gender = wvs1$Q260-1 # NAs already there. 0 is male, 1 is female.
+
+wvs$well_being <- wvs0$well_being
+
+na_rows <- apply(wvs, 1, function(row){sum(is.na(row))})
+sum(na_rows != 0) # We have to remove ALL NAs here. SO:
+missing_rows <- na_rows != 0
+wvs <- wvs[!missing_rows,]
+```
+
+Now that our dataframe is prepared, we will run Lasso on it, using the `1se` rule to select the best model and forming predictions from it.
+
+```{r chunk3}
+# Lasso
+y <- wvs$well_being
+country <- wvs$country
+# Since instructions specifically mention not to have country as a feature
+wvs <- dplyr::select(wvs, !c(well_being, country))
+grid <- 10^seq(10, -2, length = 100)
+lasso_mod <- glmnet(data.matrix(wvs), y, alpha = 1, lambda = grid)
+plot(lasso_mod)
+
+set.seed(1)
+cv_out <- cv.glmnet(data.matrix(wvs), y, alpha = 1) # tibbles don't work here!
+plot(cv_out)
+lam_1se <- cv_out$lambda.1se
+
+out <- glmnet(wvs, y, alpha = 1, lambda = grid)
+lasso.coef <- predict(out, type = "coefficients",
+                      s = lam_1se)
+sum(lasso.coef == 0) # Kicked out 37 vars
+lasso.coef[lasso.coef != 0]
+```
+
+
+## Questions
+
+**Q1.** What are your top 10 features? Do they make sense?
+
+We can find the top 10 features by taking the coefficients of the output for the cross-validation, taking out the coefficients and zero values, and then getting the largest *absolute values* of the data.
+
+```{r chunk4}
+top_features <- coef(cv_out, s = "lambda.1se")
+top_features <- top_features[-1,]
+top_features <- top_features[top_features != 0]
+sort(abs(top_features), decreasing = TRUE) |> head(10)
+```
+
+Here, we get:
+1. Q131 (Neighborhood security)
+2. Q254 (National pride)
+3. Q9 (Importance of learning hard work as a child)
+4. Q58 (Familial trust)
+5. Q250 (Importance of democracy)
+6. Q57 (Trust in most other people)
+7. Q27 (Main goal in life is to make parents proud)
+8. Q3 (Importance of Leisure Time)
+9. Q14 (Importance of learning determination and perseverance as a child)
+10. Q60 (Trust in those you know personally)
+
+Some of them make some sense; if you feel secure in your neighbors, trust others, and have pride in your country, you may feel better and more satisfied with your life. However, some like learning determination and hard work seem more confusing, as the connection isn't intuitive.
+
+**Q2.** Does your list of selected features include age and gender? Is that okay?
+
+Age and gender are *not* included, but that may simply not have as large of an effect on overall well-being.
+
+**Q3.** Run a model that includes your selected features as well as age, gender, and country.
+
+```{r q3}
+wvs_q3 <- wvs |> dplyr::select(Q131, Q254, Q9, Q58, Q250, Q57, Q27, Q3, Q14, Q60, age, gender)
+wvs_q3$country <- country
+grid <- 10^seq(10, -2, length = 100)
+lasso_q3 <- glmnet(data.matrix(wvs_q3), y, alpha = 1, lambda = grid) # y is still well-being
+par(mar = c(5, 4, 4, 8), xpd = TRUE) # Need space for the legend
+plot(lasso_q3)
+
+# Making the legend
+lasso_coefs <- coef(lasso_q3)
+var_names <- rownames(lasso_coefs)[-1]
+colors <- seq_len(length(var_names))
+legend("right", legend = var_names, col = colors, lty = 1, cex = 0.8, inset = c(-0.25, 0))
+```
+
+**Q4.** Do you think there is information left on the table after lasso? Explain.
+
+I think there is some confusing causalities, in part as a result of doing a simple linear combination for well-being that doesn't include all questions about well-being. With further tuning, we may find variables that are more reflective of well-being.

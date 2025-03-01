@@ -1,0 +1,262 @@
+---
+title: "HW2"
+author: "Jason Gordon"
+date: "2025-01-24"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(tidymodels)
+```
+
+# Homework 2 - EDA
+
+Below is the work for Homework #2. I've kept the .csv files in my local environment to get them easily. I'll download them and do the preliminary checks.
+
+```{r prelim}
+airbnb <- read_csv("listings.csv")
+codebook <- read_csv("codebook.csv")
+airbnb |> dim() # 8269 rows, 75 cols.
+```
+
+Also going to check and remove NAs as needed. The columns `neighbourhood_group_cleansed` and `Calendar_updates` are all NA, so I'll remove them. However, the rows seem relatively full, so I'll keep all of them
+
+```{r nas}
+# Columns
+na_cols <- apply(airbnb, 2, function(col){sum(is.na(col))})
+na_cols |> sort(decreasing = TRUE) |> head(25)
+missing_cols <- na_cols > (nrow(airbnb) * 0.5)
+airbnb0 <- airbnb
+airbnb <- airbnb[!missing_cols]
+
+# Rows
+na_rows <- apply(airbnb, 1, function(row){sum(is.na(row))})
+na_rows |> sort(decreasing = TRUE) |> head(25)
+```
+
+## 3 - Cleaning Data
+
+Now, let's clean the data and get a better idea of what's going on.
+
+```{r check1}
+tibble(airbnb)
+```
+
+With this data, I'll be transforming the following 10 variables:
+
+* host_location (factorize by state/country, split city)
+* host_response_time (factorize)
+* host_response_rate(% -> int)
+* host_acceptance_rate (% -> int)
+* host_neighbourhood (factorize)
+* host_verifications (This is a split list of 3, so doing 3 True/False columns.)
+* neighbourhood_cleansed (factorize)
+* bathrooms_text (factorize)
+* price ($ -> int)
+* reviews_per_month(filter)
+
+### Creating Numbers
+
+For `host_response_rate`, `host_acceptance_rate`, and `price`, we'll need to create integers, which I'll do accordingly.
+
+```{r response_rate}
+response_rate <- airbnb$host_response_rate |>
+  gsub("%", "", x = _) |>
+  as.numeric() # coerces NAs automatically
+hist(response_rate,
+     breaks = 100,
+     main = "Host Response Rate",
+     xlab = "Response Rate (%)") # Making sure there aren't any outside of 0 -> 100.
+# But...why are there some so low?
+sum(response_rate < 10, na.rm = TRUE) # Hmm...I'll filter these out.
+airbnb$host_response_rate <- response_rate
+airbnb <- airbnb |> filter(response_rate >= 10)
+```
+```{r acceptance_rate}
+acceptance_rate <- airbnb$host_acceptance_rate |>
+  gsub("%", "", x = _) |>
+  as.numeric() # coerces NAs automatically
+hist(acceptance_rate,
+     breaks = 100,
+     main = "Host Acceptance Rates",
+     xlab = "Aceptance Rate (%)") # 0% acceptance??
+sum(acceptance_rate < 10, na.rm = TRUE) # Quite a few with low acceptance. Will filter.
+airbnb$host_acceptance_rate <- acceptance_rate
+airbnb <- airbnb |> filter(host_acceptance_rate >= 10)
+hist(airbnb$host_acceptance_rate,
+     breaks = 100,
+     main = "Host Acceptance Rates (Fixed)",
+     xlab = "Aceptance Rate (%)")
+```
+```{r price}
+price <- airbnb$price |>
+  gsub("\\$|,", "", x = _) |>
+  as.numeric()
+hist(log(price),
+     breaks = 100,
+     main = "Distribution of Airbnb Prices (Histogram)",
+     xlab = "log(price)") # Hmm...why are some over 9?
+boxplot(log(price), horizontal = TRUE) # Ok, so it's not *that* much of an outlier.
+title("Distribution of Airbnb Prices", xlab = "log(price)")
+sort(price, decreasing = TRUE) |> head(25)
+# I mean, ok, I guess...$10k/night isn't bad if it's 14 rooms like I think I saw.
+airbnb$price <- price
+```
+
+In these, I've made a few histograms to see if there are any major outliers. If there was any specific issues, I also used a boxplot to find how bad outliers were.
+
+We'll also filter the amount of reviews per month to remove the massive outliers.
+
+```{r reviewspermonth}
+boxplot(airbnb$reviews_per_month, horizontal = TRUE) # 60 reviews per month seems like an outlier...
+title("Distribution of Reviews per month", xlab = "Reviews/month")
+sort(airbnb$reviews_per_month, decreasing = TRUE) |> head(25)
+# Let's filter out more than 20. That's strange for it being so high.
+airbnb <- airbnb |> filter(reviews_per_month < 20)
+boxplot(airbnb$reviews_per_month, horizontal = TRUE) # Much better.
+title("Distribution of Reviews per Month (Fixed)", xlab = "Reviews/month")
+```
+
+### Modifying and Factorizing Text
+
+Now, I'll factorize categorical variables, making them easier to use later.
+
+```{r response_time}
+airbnb |> group_by(host_response_time) |> summarize(count = n())
+response_time <- airbnb$host_response_time |>
+  gsub("N/A", NA, x = _) |>
+  factor()
+head(response_time) # Pretty clean.
+airbnb$host_response_time <- response_time
+```
+```{r neighbourhood}
+airbnb |> group_by(host_neighbourhood) |> summarize(count = n())
+neighborhood <- airbnb$host_neighbourhood |>
+  factor()
+head(neighborhood)
+airbnb$host_neighbourhood <- neighborhood
+```
+```{r cleansed}
+airbnb |> group_by(neighbourhood_cleansed) |> summarize(count = n())
+neighborhood_cleansed <- airbnb$neighbourhood_cleansed |>
+  factor()
+head(neighborhood_cleansed)
+airbnb$neighbourhood_cleansed <- neighborhood_cleansed
+```
+```{r textbath}
+airbnb |> group_by(bathrooms_text) |> summarize(count = n())
+bath_text <- airbnb$bathrooms_text |>
+  factor()
+head(bath_text)
+airbnb$bathrooms_text <- bath_text
+```
+
+### Other Modifications
+
+First, I'll split city and state/country on the host location, factorizing one but keeping the other as a string
+
+```{r location}
+airbnb |> group_by(host_location) |> summarize(count = n())
+# Let's split these since they all follow [city], [state/country].
+loc <- airbnb$host_location |> str_split(", ")
+head(loc)
+# Hmm...there seems to be just "Italy" there. Let's select the *last* element of the list.
+state <- sapply(loc, tail, 1)
+city <- sapply(loc, function(x){ifelse(length(x) == 1, NA, x[1])})
+# City can be a string. I'll make state/country a factor.
+state <- state |> factor()
+airbnb$host_city <- city
+airbnb$host_state_country <- state
+```
+
+`host_verification` is also a list of three categories, so it's easier to split them up to do True/False for each one.
+
+```{r host_verification}
+airbnb |> group_by(host_verifications) |> summarize(n())
+verif <- airbnb$host_verifications
+head(verif) # Needs cleaning first.
+verif <- verif |>
+  gsub("\\[|\\]|'", "", x = _) |>
+  str_split(", ")
+email <- sapply(verif, function(x){ifelse("email" %in% x, TRUE, FALSE)})
+# Verification
+sum(email)
+sum(!email)
+# Now for the other two.
+phone <- sapply(verif, function(x){ifelse("phone" %in% x, TRUE, FALSE)})
+work_email <- sapply(verif, function(x){ifelse("work_email" %in% x, TRUE, FALSE)})
+airbnb$email <- email
+airbnb$phone <- phone
+airbnb$work_email <- work_email
+head(select(airbnb, email, phone, work_email)) # Let's see if we did it right.
+```
+
+## Amenities
+
+For `amenities`, we'll first break the entire column into a list of lists, and then use one of the lists to create a True/False dataframe of the rest.
+
+I used the 5th term of `amenities` here since it was relatively long with 59 elements and many of the terms were rather simple, making it easy for me to use te `%in%` function to find terms.
+
+```{r amenities}
+head(airbnb$amenities) # Ok, so there's a lot going on here.
+# Let's strip the brackets and begin breaking it down.
+amenities <- airbnb$amenities |>
+  gsub("\\[\"|\"\\]", "", x = _) |> # Strips beginning and end.
+  str_split("\\\", \\\"") # Should be \", \"
+head(amenities)
+
+names <- amenities[[5]] # Most Extensive + Simplest
+df <- sapply(names, function(term){
+  sapply(amenities, function(x){ifelse(term %in% x, TRUE, FALSE)})
+}) |> data.frame()
+
+# Seeing how many are just all False
+false_cols <- apply(df, 2, function(col){sum(col)})
+false_cols |> sort() |> head(25)
+hist(false_cols)
+
+# I'll cut anything with under 1/10th.
+empty_cols <- false_cols > (nrow(df) * 0.9)
+df <- df[!empty_cols]
+
+airbnb <- cbind(airbnb, df)
+```
+
+## Transformations
+
+Overall, I think the price is useful as-is (with it becoming an int). However, having general statistics for the neighborhood would be useful.
+
+```{r transformation}
+head(airbnb$price)
+# I think this is pretty useful as-is (with the commas and $ stripped.)
+# If we're trying to predict price ranges based on the market, maybe stats as
+# mentioned in #7 could be useful
+stat_df <- airbnb |>
+  filter(host_city == "Chicago") |>
+  group_by(host_neighbourhood) |>
+  summarize(count = n(),
+            mean_price = mean(price, na.rm = TRUE),
+            median_price = median(price, na.rm = TRUE),
+            hosts = length(unique(host_id)),
+            avail_30 = sum(ifelse(availability_30, 1, 0)),
+            pct_avail = (avail_30 / count) * 100)
+airbnb <- airbnb |> merge(stat_df, by = "host_neighbourhood")
+```
+
+## Questions (#7)
+
+For these questions, I arranged the dataframe according to the mean/median or count/percentage to easily show some basic statistics as asked.
+
+I could also call head(1) for these, but I feel it's more insightful to have the entire tibble.
+
+```{r statq}
+arrange(stat_df, desc(mean_price)) # Highest Price
+arrange(stat_df, desc(median_price))
+arrange(stat_df, mean_price) # Lowest Price
+arrange(stat_df, median_price)
+arrange(stat_df, desc(hosts)) # Hosts
+arrange(stat_df, desc(avail_30)) # Availability
+arrange(stat_df, desc(pct_avail))
+```
